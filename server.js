@@ -1,27 +1,25 @@
-import express from 'express';
-import 'dotenv/config';
+// server.js -> inside the app.post('/api/chat', ...) function
 
-const app = express();
-const port = 3000;
+// ... (keep all the code above this)
 
-app.use(express.static('public'));
-
-app.get('/api/get-token', async (req, res) => {
+  // 2. Make a LIVE call to the OpenAI API
   try {
-    const response = await fetch("https://api.openai.com/v1/realtime/sessions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-      }
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        {
+          // --- NEW, IMPROVED PROMPT ---
+          role: "system",
+          content: `You are a friendly, conversational AI assistant for a technical tutorial. Your goal is to help users by providing clear, concise answers. Use the following context to answer the user's question. Rephrase the context in a natural, helpful way. Do NOT mention the word 'context' or refer to your source material (e.g., do not say 'as mentioned in the transcript'). Just provide a direct, friendly answer. CONTEXT: "${context}"`
+        },
+        {
+          role: "user",
+          content: question
+        }
+      ]
     });
-    const data = await response.json();
-    res.json(data);
-  } catch (error) {
-    console.error("Error fetching ephemeral key:", error);
-    res.status(500).json({ error: 'Failed to get token' });
-  }
-});
 
-app.listen(port, () => {
-  console.log(`Server is ready at http://localhost:${port}`);
-});
+    const answer = completion.choices[0].message.content;
+    res.json({ answer: answer });
+
+// ... (keep all the code below this)

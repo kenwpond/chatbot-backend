@@ -12,34 +12,46 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 3000;
 
-// --- CORS: restrict to your domain ---
 app.use(cors({
-  origin: "https://dataforyourbeta.com", // Update as needed
+  origin: "https://dataforyourbeta.com",
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type"],
 }));
 app.options('*', cors());
 app.use(express.json());
 
-// --- Load and parse RAG data (steps) ONCE ---
-const ragPath = path.resolve("./rag_data.json");
+// --- Load and parse both JSON data files ONCE ---
+const stepsPath = path.resolve("./rag_data.json");
+const transcriptPath = path.resolve("./transcript.json");
+
 let stepData = [];
+let transcriptData = "";
+
 try {
-  stepData = JSON.parse(fs.readFileSync(ragPath, "utf-8"));
-  if (!Array.isArray(stepData)) throw new Error("rag_data.json does not contain an array");
+  stepData = JSON.parse(fs.readFileSync(stepsPath, "utf-8"));
+  if (!Array.isArray(stepData)) throw new Error("rag_data.json is not an array");
 } catch (err) {
   console.error("FATAL: Could not load rag_data.json:", err);
   stepData = [];
 }
 
-// --- Utility: Linkify step numbers into HTML clickable ranges ---
+try {
+  // transcript.json can be plain text (string) or { text: "...", ... }
+  const parsed = JSON.parse(fs.readFileSync(transcriptPath, "utf-8"));
+  transcriptData = typeof parsed === "string" ? parsed : parsed.text || JSON.stringify(parsed);
+} catch (err) {
+  console.error("WARNING: Could not load transcript.json:", err);
+  transcriptData = "";
+}
+
+// --- Utility: Format step references as links (unchanged) ---
 function formatStepsInAnswer(answer) {
+  // ... your same logic from before ...
   const matches = Array.from(answer.matchAll(/Step\s+(\d+)/gi));
   const stepNums = matches.map(m => parseInt(m[1], 10));
   if (stepNums.length === 0) return answer;
   const uniqueSteps = [...new Set(stepNums)].sort((a, b) => a - b);
 
-  // Turn step numbers into ranges (52,53,54 -> 52–54)
   let ranges = [], start = uniqueSteps[0], end = uniqueSteps[0];
   for (let i = 1; i < uniqueSteps.length; i++) {
     if (uniqueSteps[i] === end + 1) {
@@ -69,13 +81,18 @@ function formatStepsInAnswer(answer) {
   return `${answer}<br><br>Relevant steps: ${linksStr}`;
 }
 
-// --- Utility: get general context for the prompt ---
-// (NO stepContext awareness anymore! Just sends the first 3 steps as context. You can adjust this if you want.)
-function getGeneralContext(count = 3) {
-  return stepData
-    .slice(0, count)
+// --- Utility: General context for prompt (now includes both data sources) ---
+function getGeneralContext(stepCount = 3) {
+  let steps = stepData
+    .slice(0, stepCount)
     .map(obj => `Step ${obj.step}: ${obj.guidance}`)
     .join('\n\n');
+
+  let transcript = transcriptData
+    ? `\n\nTranscript Best Practices and Explanations:\n${transcriptData.slice(0, 2000)}...` // limit if long
+    : "";
+
+  return `${steps}${transcript}`;
 }
 
 // --- Health check route ---
@@ -91,18 +108,18 @@ app.post("/api/chat", async (req, res) => {
   }
 
   // --- General context only, no stepContext ---
-  const context = getGeneralContext(3); // Send first 3 steps (adjust if needed)
+  const context = getGeneralContext(3);
 
   try {
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
     let systemPrompt = `
-You are a friendly, conversational AI assistant for a technical tutorial. Your goal is to help users by providing clear, concise answers.
+You are a friendly, conversational AI assistant for a technical tutorial and onboarding system. Your goal is to help users by providing clear, concise answers that blend step-by-step instructions with expert best-practices.
 
 When referring to steps, group consecutive steps into ranges (e.g., 52–59) and provide clickable links for each step using the format <a href="#step-52">Step 52</a> or <a href="#step-52">Steps 52–59</a>.
 Do NOT mention the word 'context' or refer to your source material (e.g., do not say 'as mentioned in the transcript'). Just provide a direct, friendly answer.
 
-Here are some steps from the guide (paraphrase and be helpful):
+Here are key steps and guidance from the workflow, plus expert explanations for best practices. Paraphrase and be helpful:
 
 ${context}
 `;

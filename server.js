@@ -71,9 +71,9 @@ function formatStepsInAnswer(answer) {
   return `${answer}<br><br>Relevant steps: ${linksStr}`;
 }
 
-// --- Main chatbot API endpoint ---
+// --- Main chatbot API endpoint (now with conversation memory) ---
 app.post("/api/chat", async (req, res) => {
-  const { question } = req.body;
+  const { question, history } = req.body;
   if (!question) {
     return res.status(400).json({ error: "No question provided" });
   }
@@ -88,23 +88,37 @@ app.post("/api/chat", async (req, res) => {
 
   try {
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: [
-        {
-          role: "system",
-          content: `You are a friendly, conversational AI assistant for a technical tutorial. Your goal is to help users by providing clear, concise answers. Use the following context to answer the user's question. Rephrase the context in a natural, helpful way. 
+
+    // Build conversation array: system message, then prior history, then latest user message
+    let messages = [
+      {
+        role: "system",
+        content: `You are a friendly, conversational AI assistant for a technical tutorial. Your goal is to help users by providing clear, concise answers. Use the following context to answer the user's question. Rephrase the context in a natural, helpful way.
 When referring to steps, group consecutive steps into ranges (e.g., 52–59) and provide clickable links for each step using the format <a href="#step-52">Step 52</a> or <a href="#step-52">Steps 52–59</a>.
 Do NOT mention the word 'context' or refer to your source material (e.g., do not say 'as mentioned in the transcript'). Just provide a direct, friendly answer. CONTEXT: "${context}"`
-        },
-        {
-          role: "user",
-          content: question
-        }
-      ]
-    });
-    let answer = completion.choices[0].message.content;
+      }
+    ];
 
+    // Add conversation memory if present (user+assistant messages, up to last N turns)
+    if (Array.isArray(history)) {
+      messages = messages.concat(history);
+    }
+    // Add current user message if not already last
+    if (
+      !history ||
+      history.length === 0 ||
+      history[history.length - 1].role !== "user" ||
+      history[history.length - 1].content !== question
+    ) {
+      messages.push({ role: "user", content: question });
+    }
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages
+    });
+
+    let answer = completion.choices[0].message.content;
     // --- Post-process answer to format steps as ranges and clickable links ---
     answer = formatStepsInAnswer(answer);
 

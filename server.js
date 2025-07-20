@@ -11,13 +11,13 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 3000;
 
-// --- CORS setup: only allow your site in production ---
+// --- CORS setup: only allow your front-end domain ---
 app.use(cors({
-  origin: "https://dataforyourbeta.com", // Allow ONLY your front-end domain
+  origin: "https://dataforyourbeta.com", // Replace with your own domain
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type"],
 }));
-app.options('*', cors()); // Handle preflight OPTIONS
+app.options('*', cors());
 
 app.use(express.json());
 
@@ -26,17 +26,14 @@ app.get("/", (req, res) => {
   res.send("Chatbot backend is running.");
 });
 
-// --- Utility to format step numbers into ranges and clickable links ---
+// --- Utility: Linkify step numbers into HTML clickable ranges ---
 function formatStepsInAnswer(answer) {
-  // Match all step numbers in the answer text (e.g., "Step 52", "Step 53")
   const matches = Array.from(answer.matchAll(/Step\s+(\d+)/gi));
   const stepNums = matches.map(m => parseInt(m[1], 10));
-  if (stepNums.length === 0) return answer; // No steps detected, return as-is
-
-  // Remove duplicates and sort
+  if (stepNums.length === 0) return answer;
   const uniqueSteps = [...new Set(stepNums)].sort((a, b) => a - b);
 
-  // Turn step numbers into ranges
+  // Turn step numbers into ranges (52,53,54 -> 52–54)
   let ranges = [], start = uniqueSteps[0], end = uniqueSteps[0];
   for (let i = 1; i < uniqueSteps.length; i++) {
     if (uniqueSteps[i] === end + 1) {
@@ -47,8 +44,6 @@ function formatStepsInAnswer(answer) {
     }
   }
   ranges.push([start, end]);
-
-  // Build linkified, grouped response (using "and" before the last range)
   let links = ranges.map(([s, e]) =>
     s === e
       ? `<a href="#step-${s}">Step ${s}</a>`
@@ -62,23 +57,20 @@ function formatStepsInAnswer(answer) {
   } else {
     linksStr = links.slice(0, -1).join(", ") + ", and " + links[links.length - 1];
   }
-
-  // If the original answer starts with "Steps that deal with..." or similar, replace it
   if (/steps? that deal/i.test(answer)) {
     return `Mail merge is covered in: ${linksStr}`;
   }
-  // Otherwise, append at the end (or adjust this logic as needed)
   return `${answer}<br><br>Relevant steps: ${linksStr}`;
 }
 
-// --- Main chatbot API endpoint (now with conversation memory) ---
+// --- Chatbot endpoint: accepts stepContext from front-end ---
 app.post("/api/chat", async (req, res) => {
-  const { question, history } = req.body;
+  const { question, history, stepContext } = req.body;
   if (!question) {
     return res.status(400).json({ error: "No question provided" });
   }
 
-  // Load your RAG context (optional, adjust path as needed)
+  // Load RAG context (optional, use your own as needed)
   let context = "";
   try {
     context = fs.readFileSync("./rag_data.json", "utf-8");
@@ -89,21 +81,24 @@ app.post("/api/chat", async (req, res) => {
   try {
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    // Build conversation array: system message, then prior history, then latest user message
-    let messages = [
-      {
-        role: "system",
-        content: `You are a friendly, conversational AI assistant for a technical tutorial. Your goal is to help users by providing clear, concise answers. Use the following context to answer the user's question. Rephrase the context in a natural, helpful way.
+    // --- Compose system prompt with step context if provided ---
+    let systemPrompt = `You are a friendly, conversational AI assistant for a technical tutorial. Your goal is to help users by providing clear, concise answers. Use the following context to answer the user's question. Rephrase the context in a natural, helpful way.
 When referring to steps, group consecutive steps into ranges (e.g., 52–59) and provide clickable links for each step using the format <a href="#step-52">Step 52</a> or <a href="#step-52">Steps 52–59</a>.
-Do NOT mention the word 'context' or refer to your source material (e.g., do not say 'as mentioned in the transcript'). Just provide a direct, friendly answer. CONTEXT: "${context}"`
-      }
-    ];
+Do NOT mention the word 'context' or refer to your source material (e.g., do not say 'as mentioned in the transcript'). Just provide a direct, friendly answer.
+CONTEXT: "${context}"`;
 
-    // Add conversation memory if present (user+assistant messages, up to last N turns)
+    // --- Add step context to the prompt if present ---
+    if (stepContext && stepContext.stepNumber && stepContext.stepCaption) {
+      systemPrompt += `\n\nThe user is currently on Step ${stepContext.stepNumber}: "${stepContext.stepCaption}". Always prioritize answering about this step unless the question is explicitly about something else.`;
+    }
+
+    // --- Build OpenAI chat messages (system + memory + user) ---
+    let messages = [
+      { role: "system", content: systemPrompt }
+    ];
     if (Array.isArray(history)) {
       messages = messages.concat(history);
     }
-    // Add current user message if not already last
     if (
       !history ||
       history.length === 0 ||
@@ -113,24 +108,23 @@ Do NOT mention the word 'context' or refer to your source material (e.g., do not
       messages.push({ role: "user", content: question });
     }
 
+    // --- Call OpenAI Chat API ---
     const completion = await openai.chat.completions.create({
       model: "gpt-4o",
       messages
     });
 
     let answer = completion.choices[0].message.content;
-    // --- Post-process answer to format steps as ranges and clickable links ---
     answer = formatStepsInAnswer(answer);
 
     res.json({ answer });
   } catch (err) {
-    // Print full error to Render logs
     console.error("OpenAI API Error:", err);
     res.status(500).json({ error: "AI backend error: " + (err.message || "Unknown error") });
   }
 });
 
-// --- Start server ---
+// --- Start the server ---
 app.listen(port, () => {
   console.log(`🔥 Ken's Chatbot Server listening on port ${port}`);
 });

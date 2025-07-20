@@ -7,25 +7,26 @@ import { OpenAI } from "openai";
 import fs from "fs";
 import path from "path";
 
-// --- Load environment variables
+// --- Load environment variables (.env)
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// --- CORS setup for your frontend
+// --- CORS: Set to your deployed frontend
 app.use(cors({
-  origin: "https://dataforyourbeta.com",
+  origin: "https://dataforyourbeta.com", // Change if frontend URL changes!
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type"],
 }));
 app.options('*', cors());
 app.use(express.json());
 
-// --- Use the correct base path for your files:
+// --- Point to data files in chatbot-backend/2nd/
 const BASE_PATH = path.resolve("chatbot-backend/2nd");
 const stepsPath = path.join(BASE_PATH, "rag_data.json");
 const transcriptPath = path.join(BASE_PATH, "transcript.json");
+// Optionally add these if needed:
 // const sectionsPath = path.join(BASE_PATH, "sections.json");
 // const captionsPath = path.join(BASE_PATH, "captions.json");
 // const framesIndexPath = path.join(BASE_PATH, "frames_index.json");

@@ -5,26 +5,32 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { OpenAI } from "openai";
 import fs from "fs";
+import path from "path";
 
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// --- CORS setup: only allow your front-end domain ---
+// --- CORS: restrict to your domain ---
 app.use(cors({
-  origin: "https://dataforyourbeta.com", // Replace with your own domain
+  origin: "https://dataforyourbeta.com", // Update as needed
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type"],
 }));
 app.options('*', cors());
-
 app.use(express.json());
 
-// --- Health check route ---
-app.get("/", (req, res) => {
-  res.send("Chatbot backend is running.");
-});
+// --- Load and parse RAG data (steps) ONCE ---
+const ragPath = path.resolve("./rag_data.json");
+let stepData = [];
+try {
+  stepData = JSON.parse(fs.readFileSync(ragPath, "utf-8"));
+  if (!Array.isArray(stepData)) throw new Error("rag_data.json does not contain an array");
+} catch (err) {
+  console.error("FATAL: Could not load rag_data.json:", err);
+  stepData = [];
+}
 
 // --- Utility: Linkify step numbers into HTML clickable ranges ---
 function formatStepsInAnswer(answer) {
@@ -63,36 +69,52 @@ function formatStepsInAnswer(answer) {
   return `${answer}<br><br>Relevant steps: ${linksStr}`;
 }
 
-// --- Chatbot endpoint: accepts stepContext from front-end ---
+// --- Utility: get relevant steps for the prompt (by number, ±range) ---
+function getRelevantSteps(stepContext, range = 2) {
+  if (stepContext && stepContext.stepNumber) {
+    const s = stepContext.stepNumber;
+    // Grab up to ±range steps around stepNumber
+    return stepData
+      .filter(obj => obj.step >= (s - range) && obj.step <= (s + range))
+      .map(obj => `Step ${obj.step}: ${obj.guidance}`)
+      .join('\n\n');
+  }
+  // Fallback: first 3 steps only (to avoid huge prompts)
+  return stepData
+    .slice(0, 3)
+    .map(obj => `Step ${obj.step}: ${obj.guidance}`)
+    .join('\n\n');
+}
+
+// --- Health check route ---
+app.get("/", (req, res) => {
+  res.send("Chatbot backend is running.");
+});
+
+// --- Chatbot endpoint ---
 app.post("/api/chat", async (req, res) => {
   const { question, history, stepContext } = req.body;
   if (!question) {
     return res.status(400).json({ error: "No question provided" });
   }
 
-  // Load RAG context (optional, use your own as needed)
-  let context = "";
-  try {
-    context = fs.readFileSync("./rag_data.json", "utf-8");
-  } catch (err) {
-    context = "No RAG context loaded.";
-  }
+  // --- Efficient context injection ---
+  const context = getRelevantSteps(stepContext, 2);
 
   try {
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    // --- Compose system prompt with step context if provided ---
-    let systemPrompt = `You are a friendly, conversational AI assistant for a technical tutorial. Your goal is to help users by providing clear, concise answers. Use the following context to answer the user's question. Rephrase the context in a natural, helpful way.
+    let systemPrompt = `
+You are a friendly, conversational AI assistant for a technical tutorial. Your goal is to help users by providing clear, concise answers.
+
 When referring to steps, group consecutive steps into ranges (e.g., 52–59) and provide clickable links for each step using the format <a href="#step-52">Step 52</a> or <a href="#step-52">Steps 52–59</a>.
 Do NOT mention the word 'context' or refer to your source material (e.g., do not say 'as mentioned in the transcript'). Just provide a direct, friendly answer.
-CONTEXT: "${context}"`;
 
-    // --- Add step context to the prompt if present ---
-    if (stepContext && stepContext.stepNumber && stepContext.stepCaption) {
-      systemPrompt += `\n\nThe user is currently on Step ${stepContext.stepNumber}: "${stepContext.stepCaption}". Always prioritize answering about this step unless the question is explicitly about something else.`;
-    }
+Here are the most relevant steps from the guide (paraphrase and be helpful):
 
-    // --- Build OpenAI chat messages (system + memory + user) ---
+${context}
+`;
+
     let messages = [
       { role: "system", content: systemPrompt }
     ];
@@ -108,7 +130,6 @@ CONTEXT: "${context}"`;
       messages.push({ role: "user", content: question });
     }
 
-    // --- Call OpenAI Chat API ---
     const completion = await openai.chat.completions.create({
       model: "gpt-4o",
       messages

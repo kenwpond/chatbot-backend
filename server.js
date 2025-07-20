@@ -12,7 +12,6 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 3000;
 
-// --- CORS: Restrict to your domain ---
 app.use(cors({
   origin: "https://dataforyourbeta.com",
   methods: ["GET", "POST", "OPTIONS"],
@@ -21,14 +20,13 @@ app.use(cors({
 app.options('*', cors());
 app.use(express.json());
 
-// --- Load and parse both JSON data files ONCE ---
+// --- Load data at startup ---
 const stepsPath = path.resolve("./rag_data.json");
 const transcriptPath = path.resolve("./transcript.json");
 
 let stepData = [];
 let transcriptData = "";
 
-// Load steps (RAG)
 try {
   stepData = JSON.parse(fs.readFileSync(stepsPath, "utf-8"));
   if (!Array.isArray(stepData)) throw new Error("rag_data.json is not an array");
@@ -37,16 +35,13 @@ try {
   stepData = [];
 }
 
-// Load transcript (best practices)
 try {
   const parsed = JSON.parse(fs.readFileSync(transcriptPath, "utf-8"));
-  // Support plain text or { text: "...", ... }
   if (typeof parsed === "string") {
     transcriptData = parsed;
   } else if (parsed.text) {
     transcriptData = parsed.text;
   } else {
-    // If object, use the first string value found, else JSON-stringify the object
     transcriptData =
       Object.values(parsed).find(v => typeof v === "string") ||
       JSON.stringify(parsed);
@@ -92,16 +87,60 @@ function formatStepsInAnswer(answer) {
   return `${answer}<br><br>Relevant steps: ${linksStr}`;
 }
 
-// --- Utility: Compose context for AI (first N steps + transcript summary) ---
-function getGeneralContext(stepCount = 3) {
-  let steps = stepData
-    .slice(0, stepCount)
-    .map(obj => `Step ${obj.step}: ${obj.guidance}`)
-    .join('\n\n');
-  let transcript = transcriptData
-    ? `\n\nTranscript Best Practices and Explanations:\n${transcriptData.slice(0, 2000)}...`
-    : "";
-  return `${steps}${transcript}`;
+// --- NEW: Dynamic retrieval of most relevant steps for each question ---
+function getRelevantSteps(question, maxSteps = 4) {
+  if (!question || !stepData.length) return [];
+  // Very basic keyword search; can be replaced by embeddings for more sophistication
+  const q = question.toLowerCase();
+
+  // First: prefer direct step number match (e.g., "step 17")
+  let stepNumMatch = q.match(/step\s*(\d+)/i);
+  if (stepNumMatch) {
+    let snum = parseInt(stepNumMatch[1], 10);
+    let stepObj = stepData.find(s => String(s.step) === String(snum));
+    return stepObj ? [stepObj] : [];
+  }
+
+  // Otherwise: score by keyword overlap in guidance
+  let scored = stepData.map(obj => {
+    let g = (obj.guidance || "").toLowerCase();
+    let score = 0;
+    // Weight: number of question words in guidance + step number if mentioned
+    for (let word of q.split(/\W+/)) {
+      if (!word || word.length < 3) continue;
+      if (g.includes(word)) score += 1;
+    }
+    // Slightly boost if the guidance mentions a keyword like "mail merge" or "filter"
+    if (g.includes("mail merge") && q.includes("mail merge")) score += 2;
+    if (g.includes("filter") && q.includes("filter")) score += 2;
+    return { ...obj, score };
+  }).sort((a, b) => b.score - a.score);
+
+  // Return only steps with nonzero score, or fall back to first N if nothing matches
+  let matches = scored.filter(s => s.score > 0).slice(0, maxSteps);
+  if (matches.length === 0) matches = stepData.slice(0, maxSteps);
+  return matches;
+}
+
+// --- NEW: Retrieve relevant transcript snippet ---
+function getRelevantTranscript(question, snippetChars = 1200) {
+  if (!transcriptData) return "";
+  let lcTranscript = transcriptData.toLowerCase();
+  let lcQ = question.toLowerCase();
+
+  // Naive: get first keyword hit, or default to start
+  let words = lcQ.split(/\W+/).filter(w => w.length > 3);
+  let idx = -1;
+  for (let w of words) {
+    idx = lcTranscript.indexOf(w);
+    if (idx !== -1) break;
+  }
+  if (idx === -1) idx = 0;
+
+  // Return a snippet with ... before/after
+  let start = Math.max(0, idx - 100);
+  let end = Math.min(lcTranscript.length, idx + snippetChars);
+  return transcriptData.slice(start, end) + (end < transcriptData.length ? "..." : "");
 }
 
 // --- Health check route ---
@@ -121,21 +160,31 @@ app.post("/api/chat", async (req, res) => {
     return res.status(400).json({ error: "No question provided" });
   }
 
-  const context = getGeneralContext(3); // adjust if you want more/less context
+  // --- DYNAMIC CONTEXT ---
+  const relevantSteps = getRelevantSteps(question, 4);
+  const stepsContext = relevantSteps
+    .map(obj => `Step ${obj.step}: ${obj.guidance}`)
+    .join('\n\n');
+  const transcriptContext = getRelevantTranscript(question, 1200);
 
-  try {
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-    let systemPrompt = `
+  // You can adjust the wording/instructions below for the model
+  let systemPrompt = `
 You are a friendly, conversational AI assistant for a technical tutorial and onboarding system. Your goal is to help users by providing clear, concise answers that blend step-by-step instructions with expert best-practices.
 
 When referring to steps, group consecutive steps into ranges (e.g., 52–59) and provide clickable links for each step using the format <a href="#step-52">Step 52</a> or <a href="#step-52">Steps 52–59</a>.
 Do NOT mention the word 'context' or refer to your source material (e.g., do not say 'as mentioned in the transcript'). Just provide a direct, friendly answer.
 
-Here are key steps and guidance from the workflow, plus expert explanations for best practices. Paraphrase and be helpful:
+Here are the most relevant steps and best practices for this question:
 
-${context}
+${stepsContext}
+
+Expert explanation or tips:
+
+${transcriptContext}
 `;
+
+  try {
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
     let messages = [{ role: "system", content: systemPrompt }];
     if (Array.isArray(history)) {

@@ -67,5 +67,5 @@ app.post("/api/chat", async (req, res) => {
 
 // --- Start server ---
 app.listen(port, () => {
-  console.log(`Server listening on port ${port}`);
+  console.log(`🔥 Ken's Chatbot Server listening on port ${port}`);
 });

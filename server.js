@@ -69,19 +69,11 @@ function formatStepsInAnswer(answer) {
   return `${answer}<br><br>Relevant steps: ${linksStr}`;
 }
 
-// --- Utility: get relevant steps for the prompt (by number, ±range) ---
-function getRelevantSteps(stepContext, range = 2) {
-  if (stepContext && stepContext.stepNumber) {
-    const s = stepContext.stepNumber;
-    // Grab up to ±range steps around stepNumber
-    return stepData
-      .filter(obj => obj.step >= (s - range) && obj.step <= (s + range))
-      .map(obj => `Step ${obj.step}: ${obj.guidance}`)
-      .join('\n\n');
-  }
-  // Fallback: first 3 steps only (to avoid huge prompts)
+// --- Utility: get general context for the prompt ---
+// (NO stepContext awareness anymore! Just sends the first 3 steps as context. You can adjust this if you want.)
+function getGeneralContext(count = 3) {
   return stepData
-    .slice(0, 3)
+    .slice(0, count)
     .map(obj => `Step ${obj.step}: ${obj.guidance}`)
     .join('\n\n');
 }
@@ -93,13 +85,13 @@ app.get("/", (req, res) => {
 
 // --- Chatbot endpoint ---
 app.post("/api/chat", async (req, res) => {
-  const { question, history, stepContext } = req.body;
+  const { question, history } = req.body;
   if (!question) {
     return res.status(400).json({ error: "No question provided" });
   }
 
-  // --- Efficient context injection ---
-  const context = getRelevantSteps(stepContext, 2);
+  // --- General context only, no stepContext ---
+  const context = getGeneralContext(3); // Send first 3 steps (adjust if needed)
 
   try {
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -110,7 +102,7 @@ You are a friendly, conversational AI assistant for a technical tutorial. Your g
 When referring to steps, group consecutive steps into ranges (e.g., 52–59) and provide clickable links for each step using the format <a href="#step-52">Step 52</a> or <a href="#step-52">Steps 52–59</a>.
 Do NOT mention the word 'context' or refer to your source material (e.g., do not say 'as mentioned in the transcript'). Just provide a direct, friendly answer.
 
-Here are the most relevant steps from the guide (paraphrase and be helpful):
+Here are some steps from the guide (paraphrase and be helpful):
 
 ${context}
 `;
